@@ -85,10 +85,20 @@ string logLevelName(LogLevel level)
         "ERROR",
         "WARNING",
         "INFO",
+        "DEBUG",
         "TRACE",
     ];
     size_t idx = level-1;
     return idx < leveltable.length ? leveltable[idx] : "???";
+}
+unittest
+{
+    assert(logLevelName(LogLevel.critical));
+    assert(logLevelName(LogLevel.error));
+    assert(logLevelName(LogLevel.warning));
+    assert(logLevelName(LogLevel.info));
+    assert(logLevelName(LogLevel.debugging));
+    assert(logLevelName(LogLevel.trace));
 }
 
 /// Main interface for implementing and appender.
