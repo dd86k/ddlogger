@@ -80,7 +80,7 @@ struct LogMessage
 /// Returns: Name, like "CRITICAL".
 string logLevelName(LogLevel level)
 {
-    static immutable string[5] leveltable = [
+    static immutable string[6] leveltable = [
         "CRITICAL",
         "ERROR",
         "WARNING",
