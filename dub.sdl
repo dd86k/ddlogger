@@ -1,0 +1,5 @@
+name "ddlogger"
+description "Minimal logging interface."
+authors "dd86k <dd@dax.moe>"
+copyright "Copyright © 2024, dd86k <dd@dax.moe>"
+license "Boost"
