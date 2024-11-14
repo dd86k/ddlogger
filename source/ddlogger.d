@@ -5,7 +5,7 @@
 /// Authors: dd86k <dd@dax.moe>
 /// Copyright: dd86k <dd@dax.moe>
 /// License: BSD-3-Clause-Clear
-module logging;
+module ddlogger;
 
 import std.stdio;
 import std.datetime;
@@ -14,8 +14,6 @@ import std.container : Array;
 import std.format;
 import std.conv;
 import core.sync.mutex;
-
-// NOTE: Made this since std.logger does a weird non-linear thing with its log level.
 
 // TODO: Message passing
 //       To avoid slowing down the caller thread, formatting on a different thread
@@ -99,6 +97,7 @@ unittest
     assert(logLevelName(LogLevel.info));
     assert(logLevelName(LogLevel.debugging));
     assert(logLevelName(LogLevel.trace));
+    assert(logLevelName(cast(LogLevel)-1));
 }
 
 /// Main interface for implementing and appender.
