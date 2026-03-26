@@ -111,10 +111,53 @@ abstract class Appender
     {
         return loglevel;
     }
+
+    /// Set log level override for a specific module.
+    ///
+    /// Uses hierarchical prefix matching: setting a level for "myapp.rendering"
+    /// also applies to "myapp.rendering.opengl", "myapp.rendering.vulkan", etc.,
+    /// unless they have their own override.
+    void setModuleLevel(const(char)[] mod, LogLevel level)
+    {
+        modlevels[mod] = level;
+    }
+
+    /// Remove a module level override.
+    void clearModuleLevel(const(char)[] mod)
+    {
+        modlevels.remove(mod);
+    }
+
+    /// Get the effective log level for a given module name.
+    ///
+    /// Checks for an exact module match first, then walks up the
+    /// hierarchy (e.g. "a.b.c" → "a.b" → "a") looking for a prefix match.
+    /// Falls back to the appender's default level.
+    LogLevel getEffectiveLevel(const(char)[] mod)
+    {
+        // Exact match
+        if (auto p = mod in modlevels)
+            return *p;
+
+        // Walk up the hierarchy
+        for (auto m = mod; m.length > 0; )
+        {
+            import std.string : lastIndexOf;
+            auto idx = lastIndexOf(m, '.');
+            if (idx < 0) break;
+            m = m[0 .. idx];
+            if (auto p = m in modlevels)
+                return *p;
+        }
+
+        return loglevel;
+    }
+
     void log(ref LogMessage message);
 
 private:
     LogLevel loglevel;
+    LogLevel[const(char)[]] modlevels;
 }
 
 /// Implements a logger that prints logs to the process's stderr stream.
@@ -185,6 +228,16 @@ void logSetLevel(LogLevel level)
         appender.setLogLevel(level);
 }
 
+/// Set module log level override on all appenders.
+/// Params:
+///     mod = Module name (hierarchical prefix match).
+///     level = New log level for this module. Use LogLevel.none to mute.
+void logSetModuleLevel(const(char)[] mod, LogLevel level)
+{
+    foreach (appender; appenders)
+        appender.setModuleLevel(mod, level);
+}
+
 void logAddAppender(Appender appender)
 {
     appenders.insertBack(appender);
@@ -205,8 +258,8 @@ Ltest:
     bool prepped;
     foreach (appender; appenders)
     {
-        // Do not bother if the appender's level is too low against requested level
-        if (appender.getLogLevel() < level)
+        // Do not bother if the appender's effective level is too low against requested level
+        if (appender.getEffectiveLevel(mod) < level)
             continue;
         
         // At least one appender has the required level, init message
@@ -299,4 +352,41 @@ unittest
     assert(app.getLogLevel() == LogLevel.warning);
     
     // TODO: Thread test
+}
+
+unittest
+{
+    class CountAppender : Appender
+    {
+        int count;
+        override void log(ref LogMessage message) { ++count; }
+    }
+
+    // Module level filtering
+    scope app = new CountAppender();
+    app.setLogLevel(LogLevel.all);
+
+    // Mute a specific module
+    app.setModuleLevel("noisy.module", LogLevel.none);
+    assert(app.getEffectiveLevel("noisy.module") == LogLevel.none);
+
+    // Hierarchical: child inherits parent override
+    app.setModuleLevel("myapp.rendering", LogLevel.error);
+    assert(app.getEffectiveLevel("myapp.rendering") == LogLevel.error);
+    assert(app.getEffectiveLevel("myapp.rendering.opengl") == LogLevel.error);
+    assert(app.getEffectiveLevel("myapp.rendering.vulkan") == LogLevel.error);
+
+    // Unrelated module falls back to default
+    assert(app.getEffectiveLevel("myapp.network") == LogLevel.all);
+
+    // More specific override wins over parent
+    app.setModuleLevel("myapp.rendering.opengl", LogLevel.trace);
+    assert(app.getEffectiveLevel("myapp.rendering.opengl") == LogLevel.trace);
+    assert(app.getEffectiveLevel("myapp.rendering.vulkan") == LogLevel.error);
+
+    // clearModuleLevel removes override
+    app.clearModuleLevel("myapp.rendering.opengl");
+    assert(app.getEffectiveLevel("myapp.rendering.opengl") == LogLevel.error);
+    app.clearModuleLevel("myapp.rendering");
+    assert(app.getEffectiveLevel("myapp.rendering.opengl") == LogLevel.all);
 }
