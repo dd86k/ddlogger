@@ -15,18 +15,15 @@ import std.format;
 import std.conv;
 import core.sync.mutex;
 
-// TODO: Message passing
-//       To avoid slowing down the caller thread, formatting on a different thread
-//       would be beneficial. The issue would be the thread mailbox and how to handle
-//       a full mailbox.
-//       Make feature opt-in.
-
-// TODO: Appender ideas
-//       MemoryAppender
-//       ColoredConsoleAppender
-//       SyslogAppender
-
-// TODO: Flag/function to enable "debug info"? Like module/line.
+// TODO: Add/Remove specific level (log level bitfields)
+//       In the rarer case where debugging is noisier than tracing, one might
+//       seek to turn off debugging in a specific module.
+//       However, the idea of a log level needs to remain (setLevel toggles a range).
+//       At the same time, introduce (names pending):
+//       - enableLevel(LogLevel)
+//       - disableLevel(LogLevel)
+//       - enableModuleLevel(string, LogLevel)
+//       - disableModuleLevel(string, LogLevel)
 
 /// Log level used on a per-message basis.
 ///
@@ -103,10 +100,14 @@ unittest
 /// Main interface for implementing and appender.
 abstract class Appender
 {
+    /// Set the log level to this appender.
+    /// Params: level = New log level for all new messages.
     void setLogLevel(LogLevel level)
     {
         loglevel = level;
     }
+    /// Get the currently set log level of this appender.
+    /// Returns: Log level.
     LogLevel getLogLevel()
     {
         return loglevel;
@@ -117,12 +118,17 @@ abstract class Appender
     /// Uses hierarchical prefix matching: setting a level for "myapp.rendering"
     /// also applies to "myapp.rendering.opengl", "myapp.rendering.vulkan", etc.,
     /// unless they have their own override.
+    ///
+    /// Params:
+    ///     mod = Module path.
+    ///     level = New log level.
     void setModuleLevel(const(char)[] mod, LogLevel level)
     {
         modlevels[mod] = level;
     }
 
     /// Remove a module level override.
+    /// Params: mod = Module path.
     void clearModuleLevel(const(char)[] mod)
     {
         modlevels.remove(mod);
@@ -131,22 +137,25 @@ abstract class Appender
     /// Get the effective log level for a given module name.
     ///
     /// Checks for an exact module match first, then walks up the
-    /// hierarchy (e.g. "a.b.c" → "a.b" → "a") looking for a prefix match.
+    /// hierarchy (e.g. "a.b.c" -> "a.b" -> "a") looking for a prefix match.
     /// Falls back to the appender's default level.
+    ///
+    /// Params: mod = Module path.
+    /// Returns: Log level.
     LogLevel getEffectiveLevel(const(char)[] mod)
     {
         // Exact match
-        if (auto p = mod in modlevels)
+        if (LogLevel *p = mod in modlevels)
             return *p;
 
         // Walk up the hierarchy
-        for (auto m = mod; m.length > 0; )
+        for (const(char)[] m = mod; m.length > 0; )
         {
             import std.string : lastIndexOf;
-            auto idx = lastIndexOf(m, '.');
+            ptrdiff_t idx = lastIndexOf(m, '.');
             if (idx < 0) break;
             m = m[0 .. idx];
-            if (auto p = m in modlevels)
+            if (LogLevel *p = m in modlevels)
                 return *p;
         }
 
