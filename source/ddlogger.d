@@ -13,7 +13,7 @@ import std.datetime.stopwatch;
 import std.container : Array;
 import std.format;
 import std.conv;
-import core.sync.mutex;
+import core.sync.rwmutex;
 
 // TODO: Add/Remove specific level (log level bitfields)
 //       In the rarer case where debugging is noisier than tracing, one might
@@ -219,20 +219,22 @@ private __gshared
 {
     Array!Appender appenders;
     StopWatch watch;
-    Mutex mutx;
+    ReadWriteMutex rwmtx;
 }
 
 shared static this()
 {
     watch.start();
     appenders = Array!Appender();
-    mutx = new Mutex();
+    rwmtx = new ReadWriteMutex();
 }
 
 /// Set log level to all appenders.
 /// Params: level = New log level.
 void logSetLevel(LogLevel level)
 {
+    rwmtx.writer.lock();
+    scope(exit) rwmtx.writer.unlock();
     foreach (appender; appenders)
         appender.setLogLevel(level);
 }
@@ -243,12 +245,16 @@ void logSetLevel(LogLevel level)
 ///     level = New log level for this module. Use LogLevel.none to mute.
 void logSetModuleLevel(const(char)[] mod, LogLevel level)
 {
+    rwmtx.writer.lock();
+    scope(exit) rwmtx.writer.unlock();
     foreach (appender; appenders)
         appender.setModuleLevel(mod, level);
 }
 
 void logAddAppender(Appender appender)
 {
+    rwmtx.writer.lock();
+    scope(exit) rwmtx.writer.unlock();
     appenders.insertBack(appender);
 }
 
@@ -258,11 +264,10 @@ private
 void logt(A...)(LogLevel level, string mod, int line, const(char)[] fmt, A args)
 {
     if (appenders.length == 0) return;
-    
-Ltest:
-    if (mutx.tryLock_nothrow() == false)
-        goto Ltest;
-    
+
+    rwmtx.reader.lock();
+    scope(exit) rwmtx.reader.unlock();
+
     LogMessage msg = void;
     bool prepped;
     foreach (appender; appenders)
@@ -288,8 +293,6 @@ Ltest:
         // Send message to appender
         appender.log(msg);
     }
-    
-    mutx.unlock_nothrow();
 }
 
 void logCritical(A...)(string fmt, A args, string MODULE = __MODULE__, int LINE = __LINE__)
