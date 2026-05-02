@@ -15,16 +15,6 @@ import std.format;
 import std.conv;
 import core.sync.rwmutex;
 
-// TODO: Add/Remove specific level (log level bitfields)
-//       In the rarer case where debugging is noisier than tracing, one might
-//       seek to turn off debugging in a specific module.
-//       However, the idea of a log level needs to remain (setLevel toggles a range).
-//       At the same time, introduce (names pending):
-//       - enableLevel(LogLevel)
-//       - disableLevel(LogLevel)
-//       - enableModuleLevel(string, LogLevel)
-//       - disableModuleLevel(string, LogLevel)
-
 /// Log level used on a per-message basis.
 ///
 /// The higher the level, the more verbose the logger will be. As in,
@@ -215,6 +205,8 @@ class FileAppender : Appender
     }
 }
 
+// TODO: MemoryAppender with entry limit in ctor, defaulting to size_t.max
+
 private __gshared
 {
     Array!Appender appenders;
@@ -251,6 +243,8 @@ void logSetModuleLevel(const(char)[] mod, LogLevel level)
         appender.setModuleLevel(mod, level);
 }
 
+/// Add an appender to the list.
+/// Params: appender = Newly created appender.
 void logAddAppender(Appender appender)
 {
     rwmtx.writer.lock();
@@ -276,7 +270,7 @@ void logt(A...)(LogLevel level, string mod, int line, const(char)[] fmt, A args)
         if (appender.getEffectiveLevel(mod) < level)
             continue;
         
-        // At least one appender has the required level, init message
+        // At least one appender has the required level, init message (lazy method)
         if (prepped == false)
         {
             Duration since = watch.peek();
@@ -341,6 +335,7 @@ unittest
     scope app = new UnittestAppender();
     app.setLogLevel(LogLevel.warning);
     assert(app.getLogLevel() == LogLevel.warning);
+    assert(app.count == 0);
     
     // Add it to global list
     logAddAppender(app);
@@ -358,12 +353,11 @@ unittest
     assert(app.lastmsg.level == LogLevel.trace);
     assert(app.lastmsg.usecs);
     assert(app.lastmsg.time.day);
+    assert(app.count == 1);
     
     // Set new level
     logSetLevel(LogLevel.warning);
     assert(app.getLogLevel() == LogLevel.warning);
-    
-    // TODO: Thread test
 }
 
 unittest
