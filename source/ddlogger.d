@@ -7,13 +7,13 @@
 /// License: BSD-3-Clause-Clear
 module ddlogger;
 
-import std.stdio;
+import core.sync.rwmutex;
+
+import std.conv;
 import std.datetime;
 import std.datetime.stopwatch;
-import std.container : Array;
 import std.format;
-import std.conv;
-import core.sync.rwmutex;
+import std.stdio;
 
 /// Log level used on a per-message basis.
 ///
@@ -209,7 +209,14 @@ class FileAppender : Appender
 
 private __gshared
 {
-    Array!Appender appenders;
+    // MUST be a plain GC slice, not std.container.Array. Appenders are GC
+    // class instances. Array keeps them in malloc'd memory where the GC doesn't
+    // scan, so under heavy logging a collection frees them and the next
+    // foreach here derefs a dangling object, it leads to a SIGSEGV.
+    // A __gshared slice is a GC root, which keeps them alive.
+    //
+    // No need to optimize this.
+    Appender[] appenders;
     StopWatch watch;
     ReadWriteMutex rwmtx;
 }
@@ -217,7 +224,6 @@ private __gshared
 shared static this()
 {
     watch.start();
-    appenders = Array!Appender();
     rwmtx = new ReadWriteMutex();
 }
 
@@ -249,7 +255,7 @@ void logAddAppender(Appender appender)
 {
     rwmtx.writer.lock();
     scope(exit) rwmtx.writer.unlock();
-    appenders.insertBack(appender);
+    appenders ~= appender;
 }
 
 // Function template will make the target binary bigger but it is the
