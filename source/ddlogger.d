@@ -263,8 +263,10 @@ void logAddAppender(Appender appender)
 private
 void logt(A...)(LogLevel level, string mod, int line, const(char)[] fmt, A args)
 {
-    if (appenders.length == 0) return;
-
+    // NOTE: No early length check before the lock.
+    // Reading appenders.length unsynchronized races with the slice assignment
+    // in logAddAppender (ptr+length is two words, not atomic). The foreach
+    // below already does nothing on an empty list.
     rwmtx.reader.lock();
     scope(exit) rwmtx.reader.unlock();
 
