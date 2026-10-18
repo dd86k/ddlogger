@@ -51,7 +51,7 @@ struct LogMessage
     SysTime time;
     /// Time since startup.
     long usecs;
-    /// Formatted text.
+    /// Formatted text, only valid for the duration of Appender.log.
     const(char)[] text;
     /// Module.
     const(char)[] mod;
@@ -259,6 +259,39 @@ void logAddAppender(Appender appender)
     appenders ~= appender;
 }
 
+/// Output range over a fixed buffer that silently drops what doesn't fit,
+/// so formatting never allocates for the message itself.
+private
+struct TruncatingSink
+{
+    char[] buf;
+    size_t len;
+    bool full;
+
+    void put(scope const(char)[] s) nothrow @nogc @safe
+    {
+        if (full)
+            return;
+        size_t n = buf.length - len;
+        if (s.length > n)
+        {
+            full = true;
+            // Don't split a UTF-8 sequence
+            while (n > 0 && (s[n] & 0xC0) == 0x80)
+                --n;
+        }
+        else
+            n = s.length;
+        buf[len .. len + n] = s[0 .. n];
+        len += n;
+    }
+
+    const(char)[] data() nothrow @nogc @safe
+    {
+        return buf[0 .. len];
+    }
+}
+
 // Function template will make the target binary bigger but it is the
 // only sane way to deal with format() and variadic parameters for it...
 private
@@ -276,6 +309,7 @@ void logt(A...)(LogLevel level, string mod, int line, const(char)[] fmt, A args)
     catch (Exception) return;
     scope(exit) collectException(rwmtx.reader.unlock());
 
+    char[1024] textbuf = void;
     LogMessage msg = void;
     bool prepped;
     foreach (appender; appenders)
@@ -293,7 +327,12 @@ void logt(A...)(LogLevel level, string mod, int line, const(char)[] fmt, A args)
                 SysTime time = Clock.currTime(); // NOTE: takes ~500 µs on Windows
                 const(char)[] text = void;
                 // Keep the raw format string so the message isn't lost entirely
-                try text = format(fmt, args);
+                TruncatingSink sink = TruncatingSink(textbuf);
+                try
+                {
+                    formattedWrite(sink, fmt, args);
+                    text = sink.data;
+                }
                 catch (Exception) text = fmt;
                 msg = LogMessage(level,
                     time,
@@ -351,6 +390,7 @@ unittest
         {
             ++count;
             lastmsg = message;
+            lastmsg.text = message.text.idup;
         }
     }
     
@@ -433,7 +473,11 @@ unittest
     class LastAppender : Appender
     {
         LogMessage lastmsg;
-        override void log(ref LogMessage message) { lastmsg = message; }
+        override void log(ref LogMessage message)
+        {
+            lastmsg = message;
+            lastmsg.text = message.text.idup;
+        }
     }
 
     // Earlier tests leave scope-destroyed appenders in the global list
@@ -452,4 +496,16 @@ unittest
         logError("missing: %d %d", 1);
     }();
     assert(good.lastmsg.text == "missing: %d %d");
+}
+unittest
+{
+    char[8] buf;
+    TruncatingSink sink = TruncatingSink(buf);
+    formattedWrite(sink, "%s", "abcdefghijkl");
+    assert(sink.data == "abcdefgh");
+
+    // "é" is 2 bytes; it must not be cut in half at the boundary
+    sink = TruncatingSink(buf);
+    formattedWrite(sink, "abcdefg%s", "é");
+    assert(sink.data == "abcdefg");
 }
