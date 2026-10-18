@@ -115,7 +115,11 @@ abstract class Appender
     ///     level = New log level.
     void setModuleLevel(const(char)[] mod, LogLevel level)
     {
-        modlevels[mod] = level;
+        // Keys are copied: the caller's buffer may be reused after this call.
+        if (LogLevel *p = mod in modlevels)
+            *p = level;
+        else
+            modlevels[mod.idup] = level;
     }
 
     /// Remove a module level override.
