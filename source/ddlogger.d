@@ -12,6 +12,7 @@ import core.sync.rwmutex;
 import std.conv;
 import std.datetime;
 import std.datetime.stopwatch;
+import std.exception : collectException;
 import std.format;
 import std.stdio;
 
@@ -261,63 +262,77 @@ void logAddAppender(Appender appender)
 // Function template will make the target binary bigger but it is the
 // only sane way to deal with format() and variadic parameters for it...
 private
-void logt(A...)(LogLevel level, string mod, int line, const(char)[] fmt, A args)
+void logt(A...)(LogLevel level, string mod, int line, const(char)[] fmt, A args) nothrow
 {
+    // Logging must never take the caller down: calls often sit in catch blocks,
+    // so a full disk or a bad format string is swallowed rather than rethrown.
+    // Errors (e.g. SyncError) are left to propagate.
+
     // NOTE: No early length check before the lock.
     // Reading appenders.length unsynchronized races with the slice assignment
     // in logAddAppender (ptr+length is two words, not atomic). The foreach
     // below already does nothing on an empty list.
-    rwmtx.reader.lock();
-    scope(exit) rwmtx.reader.unlock();
+    try rwmtx.reader.lock();
+    catch (Exception) return;
+    scope(exit) collectException(rwmtx.reader.unlock());
 
     LogMessage msg = void;
     bool prepped;
     foreach (appender; appenders)
     {
-        // Do not bother if the appender's effective level is too low against requested level
-        if (appender.getEffectiveLevel(mod) < level)
-            continue;
-        
-        // At least one appender has the required level, init message (lazy method)
-        if (prepped == false)
+        try
         {
-            Duration since = watch.peek();
-            SysTime time = Clock.currTime(); // NOTE: takes ~500 µs on Windows
-            msg = LogMessage(level,
-                time,
-                since.total!"usecs"(),
-                format(fmt, args),
-                mod,
-                line);
-            prepped = true;
+            // Do not bother if the appender's effective level is too low against requested level
+            if (appender.getEffectiveLevel(mod) < level)
+                continue;
+            
+            // At least one appender has the required level, init message (lazy method)
+            if (prepped == false)
+            {
+                Duration since = watch.peek();
+                SysTime time = Clock.currTime(); // NOTE: takes ~500 µs on Windows
+                const(char)[] text = void;
+                // Keep the raw format string so the message isn't lost entirely
+                try text = format(fmt, args);
+                catch (Exception) text = fmt;
+                msg = LogMessage(level,
+                    time,
+                    since.total!"usecs"(),
+                    text,
+                    mod,
+                    line);
+                prepped = true;
+            }
+            
+            // Per appender, so one failing sink (e.g. a pulled USB stick)
+            // doesn't silence the others
+            appender.log(msg);
         }
-        
-        // Send message to appender
-        appender.log(msg);
+        catch (Exception) {}
     }
 }
 
-void logCritical(A...)(string fmt, A args, string MODULE = __MODULE__, int LINE = __LINE__)
+void logCritical(A...)(string fmt, A args, string MODULE = __MODULE__, int LINE = __LINE__) nothrow
 {
     logt(LogLevel.critical, MODULE, LINE, fmt, args);
 }
-void logError(A...)(string fmt, A args, string MODULE = __MODULE__, int LINE = __LINE__)
+void logError(A...)(string fmt, A args, string MODULE = __MODULE__, int LINE = __LINE__) nothrow
 {
     logt(LogLevel.error, MODULE, LINE, fmt, args);
 }
-void logWarn(A...)(string fmt, A args, string MODULE = __MODULE__, int LINE = __LINE__)
+void logWarn(A...)(string fmt, A args, string MODULE = __MODULE__, int LINE = __LINE__) nothrow
 {
     logt(LogLevel.warning, MODULE, LINE, fmt, args);
 }
-void logInfo(A...)(string fmt, A args, string MODULE = __MODULE__, int LINE = __LINE__)
+void logInfo(A...)(string fmt, A args, string MODULE = __MODULE__, int LINE = __LINE__) nothrow
 {
     logt(LogLevel.info, MODULE, LINE, fmt, args);
 }
-void logDebugging(A...)(string fmt, A args, string MODULE = __MODULE__, int LINE = __LINE__)
+void logDebugging(A...)(string fmt, A args, string MODULE = __MODULE__, int LINE = __LINE__) nothrow
 {
     logt(LogLevel.debugging, MODULE, LINE, fmt, args);
 }
-void logTrace(A...)(string fmt, A args, string MODULE = __MODULE__, int LINE = __LINE__)
+void logTrace(A...)(string fmt, A args, string MODULE = __MODULE__, int LINE = __LINE__) nothrow
 {
     logt(LogLevel.trace, MODULE, LINE, fmt, args);
 }
@@ -403,4 +418,38 @@ unittest
     assert(app.getEffectiveLevel("myapp.rendering.opengl") == LogLevel.error);
     app.clearModuleLevel("myapp.rendering");
     assert(app.getEffectiveLevel("myapp.rendering.opengl") == LogLevel.all);
+}
+unittest
+{
+    import std.exception : ErrnoException;
+
+    class ThrowAppender : Appender
+    {
+        override void log(ref LogMessage message)
+        {
+            throw new ErrnoException("disk full");
+        }
+    }
+    class LastAppender : Appender
+    {
+        LogMessage lastmsg;
+        override void log(ref LogMessage message) { lastmsg = message; }
+    }
+
+    // Earlier tests leave scope-destroyed appenders in the global list
+    appenders = null;
+    scope(exit) appenders = null;
+
+    ThrowAppender bad = new ThrowAppender();
+    LastAppender good = new LastAppender();
+    logAddAppender(bad);
+    logAddAppender(good);
+    logSetLevel(LogLevel.all);
+
+    // Neither a failing appender nor a malformed format string may escape
+    () nothrow {
+        logError("value: %d", 1);
+        logError("missing: %d %d", 1);
+    }();
+    assert(good.lastmsg.text == "missing: %d %d");
 }
