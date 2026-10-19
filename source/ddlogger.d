@@ -192,9 +192,17 @@ class FileAppender : Appender
 {
     File file;
     
-    this(string path)
+    /// Params:
+    ///     path = File path.
+    ///     mode = fopen mode, "a" appends to, "w" truncates an existing file.
+    this(string path, string mode = "a")
     {
-        file = File(path, "a");
+        file = File(path, mode);
+    }
+
+    void close()
+    {
+        file.close();
     }
     
     override
@@ -263,6 +271,22 @@ void logAddAppender(Appender appender)
     appenders ~= appender;
 }
 
+/// Remove an appender from the list. It is not closed.
+/// Params: appender = Previously added appender.
+/// Returns: True if it was found.
+bool logRemoveAppender(Appender appender)
+{
+    import std.algorithm.searching : countUntil;
+    import std.algorithm.mutation : remove;
+    rwmtx.writer.lock();
+    scope(exit) rwmtx.writer.unlock();
+    ptrdiff_t i = appenders.countUntil!(a => a is appender);
+    if (i < 0)
+        return false;
+    appenders = appenders.remove(i);
+    return true;
+}
+
 /// Output range over a fixed buffer that silently drops what doesn't fit,
 /// so formatting never allocates for the message itself.
 private
@@ -328,7 +352,7 @@ void logt(A...)(LogLevel level, string mod, int line, const(char)[] fmt, A args)
             if (prepped == false)
             {
                 Duration since = watch.peek();
-                SysTime time = Clock.currTime(); // NOTE: takes ~500 µs on Windows
+                SysTime time = Clock.currTime();
                 const(char)[] text = void;
                 // Keep the raw format string so the message isn't lost entirely
                 TruncatingSink sink = TruncatingSink(textbuf);
@@ -512,4 +536,27 @@ unittest
     sink = TruncatingSink(buf);
     formattedWrite(sink, "abcdefg%s", "é");
     assert(sink.data == "abcdefg");
+}
+
+unittest
+{
+    class CountAppender : Appender
+    {
+        int count;
+        override void log(ref LogMessage message) { ++count; }
+    }
+
+    appenders = null;
+    scope(exit) appenders = null;
+
+    CountAppender a = new CountAppender();
+    CountAppender b = new CountAppender();
+    logAddAppender(a);
+    logAddAppender(b);
+    logSetLevel(LogLevel.info);
+    assert(logRemoveAppender(a));
+    assert(logRemoveAppender(a) == false);
+    logInfo("x");
+    assert(a.count == 0);
+    assert(b.count == 1);
 }
